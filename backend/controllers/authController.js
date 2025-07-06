@@ -1,5 +1,5 @@
 const OTP = require("../models/OTP");
-const user = require("../models/user");
+const UserModel = require("../models/user");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const sendOTP = require("../utils/sendOTP");
@@ -54,9 +54,9 @@ const registerHandler = async (req, res, next) => {
   } = req.body;
 
   // Check if user already exists
-  const existinguser = await user.findOne({ mobile });
-  if (existinguser) {
-    return res.status(400).json({ message: "Email already registered" });
+  const existingUser = await UserModel.findOne({ mobile });
+  if (existingUser) {
+    return res.status(400).json({ message: "Mobile number already registered" });
   }
 
   // Check if mobile was verified
@@ -67,7 +67,7 @@ const registerHandler = async (req, res, next) => {
   const hashedPassword = await bcrypt.hash(password, 10);
 
   // Create user
-  const newUser = await user.create({
+  const newUser = await UserModel.create({
     role,
     name,
     mobile,
@@ -93,23 +93,55 @@ const registerHandler = async (req, res, next) => {
 const loginHandler = async (req, res, next) => {
   const { mobile, password } = req.body;
 
+  // Input validation
+  if (!mobile || !password) {
+    return res.status(400).json({
+      success: false,
+      message: "Mobile number and password are required"
+    });
+  }
+
   try {
-    const user = await user.findOne({ mobile, password });
-    if (!user) {
-      return res
-        .status(400)
-        .json({ message: "Invalid phone number or password" });
+    console.log('Login attempt for mobile:', mobile);
+    
+    // Format the mobile number to match the database format
+    let formattedMobile = mobile.trim();
+    
+    // If mobile doesn't start with +91, add it
+    if (!formattedMobile.startsWith('+91')) {
+      // Remove any spaces or special characters
+      const cleanNumber = formattedMobile.replace(/[^0-9]/g, '');
+      // Add +91 prefix if it's a 10-digit number
+      if (cleanNumber.length === 10) {
+        formattedMobile = `+91 ${cleanNumber}`;
+      } else if (cleanNumber.length === 12 && cleanNumber.startsWith('91')) {
+        formattedMobile = `+${cleanNumber.slice(0, 2)} ${cleanNumber.slice(2)}`;
+      }
+    }
+    
+    console.log('Formatted mobile for search:', formattedMobile);
+    const foundUser = await UserModel.findOne({ mobile: formattedMobile }).select('+password');
+    
+    if (!foundUser) {
+      console.log('User not found for mobile:', formattedMobile);
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number or password"
+      });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    console.log('User found, checking password...');
+    const isMatch = await bcrypt.compare(password, foundUser.password);
     if (!isMatch) {
-      return res
-        .status(400)
-        .json({ message: "Invalid phone number or password" });
+      console.log('Invalid password for user:', mobile);
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number or password"
+      });
     }
 
     // 🚨 Check for worker approval
-    if (user.role === "worker" && !user.is_approved) {
+    if (foundUser.role === "worker" && !foundUser.is_approved) {
       return res.status(403).json({
         success: false,
         message: "Admin Approval Under Process",
@@ -118,10 +150,10 @@ const loginHandler = async (req, res, next) => {
 
     // Generate JWT
     const token = jwt.sign(
-      { userId: user._id, role: user.role },
+      { userId: foundUser._id, role: foundUser.role },
       process.env.JWT_SECRET,
       {
-        expiresIn: process.env.JWT_EXPIRES_IN,
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d',
       }
     );
 
@@ -130,12 +162,12 @@ const loginHandler = async (req, res, next) => {
       message: "Login successful",
       token,
       user: {
-        id: user._id,
-        name: user.name,
-        role: user.role,
-        mobile: user.mobile,
-        mobile_verified: user.mobile_verified,
-        email: user.email,
+        id: foundUser._id,
+        name: foundUser.name,
+        role: foundUser.role,
+        mobile: foundUser.mobile,
+        mobile_verified: foundUser.mobile_verified,
+        email: foundUser.email,
       },
     });
   } catch (err) {
